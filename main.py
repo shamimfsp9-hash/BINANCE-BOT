@@ -29,18 +29,29 @@ def send_telegram_message(message):
         print(f"Telegram Error: {e}")
 
 def background_trading_bot():
-    """ব্যাকগ্রাউন্ডে নিয়মিত রান হওয়া ট্রেডিং লজিক"""
-    print("Secure Full Auto Futures Trading Bot Started...")
-    send_telegram_message("🟢 Secure Full Auto Futures Trading Bot is Active and Running!")
+    """ব্যাকগ্রাউন্ডে নিয়মিত রান হওয়া BTCUSDT মার্কেট সুইপ ও রিভার্সাল লজিক"""
+    print("BTCUSDT Smart Money Reversal Bot Started...")
+    send_telegram_message("🟢 BTCUSDT Market Sweep & Reversal Bot is Active!")
     
-    # বাইন্যান্স ক্লায়েন্ট নিরাপদভাবে লুপের ভেতরে ইনিশিয়ালাইজ করা হবে যাতে বারবার রেট লিমিট না খায়
     while True:
         try:
-            # এখানে ক্লায়েন্ট কল করুন
+            # আইপি রেট লিমিট এড়াতে সেফভাবে ক্লায়েন্ট ইনিশিয়ালাইজ করা
             client = Client(API_KEY, API_SECRET)
-            # ট্রেডিং বা ব্যালেন্স চেক লজিক এখানে থাকবে
             
+            # BTCUSDT এর ৫ মিনিটের ক্যান্ডেল ডাটা ফেচ করা (শেষ ১০টি ক্যান্ডেল)
+            klines = client.get_klines(symbol='BTCUSDT', interval=Client.KLINE_INTERVAL_5MINUTE, limit=10)
+            
+            if klines:
+                latest_candle = klines[-1]
+                close_price = float(latest_candle[4])
+                high_price = float(latest_candle[2])
+                low_price = float(latest_candle[3])
+                
+                print(f"BTCUSDT Checked: Close={close_price}, High={high_price}, Low={low_price}")
+                # ভবিষ্যতের সুইপ বা FVG কন্ডিশন এখানে যোগ করা যাবে
+                
             time.sleep(600) # ১০ মিনিট পর পর রিকোয়েস্ট পাঠাবে যাতে আইপি ব্যান না হয়
+            
         except Exception as e:
             error_msg = f"⚠️ Binance error / Rate limit: {str(e)}"
             print(error_msg)
