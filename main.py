@@ -118,3 +118,12 @@ def auto_trade_loop(df_1m, daily_high, daily_low):
   else:
     # যদি ইতিমধ্যে ট্রেড রানিং থাকে, তবে তা ট্রেইল এবং ম্যানেজ করতে থাকবে
     manage_active_trade(df_1m)
+    from flask import Flask
+
+app = Flask(__name__)
+
+
+@app.route("/")
+def home():
+  return "Trading Bot is Running!"
+
