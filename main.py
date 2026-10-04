@@ -19,7 +19,7 @@ def get_binance_client():
     if client is None and BINANCE_API_KEY and BINANCE_API_SECRET:
         try:
             client = Client(BINANCE_API_KEY, BINANCE_API_SECRET)
-            # Test call to verify if IP is unbanned
+            # Test ping to check unban status
             client.futures_ping()
             print("Binance Client Initialized Successfully!")
         except Exception as e:
@@ -47,7 +47,7 @@ def auto_trade_loop():
         try:
             b_client = get_binance_client()
             if b_client is None:
-                # API কানেক্ট না হলে ৫ মিনিট সম্পূর্ণ নীরব থাকবে
+                # Binance connection error / IP ban cooldown (5 mins silence)
                 time.sleep(300)
                 continue
 
@@ -68,53 +68,69 @@ def auto_trade_loop():
             c1_is_red = float(c1[4]) < float(c1[1])
             c2_is_red = float(c2[4]) < float(c2[1])
 
-            # BUY SETUP
+            # --- ENTRY SIGNALS ---
+            # BUY SETUP (Previous Day Low Sweep + 2 Green 1m Candles)
             if POSITION is None and float(c2[3]) < prev_day_low and c1_is_green and c2_is_green:
                 sl_price = min(float(c1[3]), float(c2[3]))
                 order = b_client.futures_create_order(symbol=SYMBOL, side="BUY", type="MARKET", quantity=0.002)
                 POSITION = {"side": "BUY", "sl": sl_price, "entry": current_price}
                 send_telegram(f"🚀 BUY Trade Opened!\nSymbol: {SYMBOL}\nEntry: {current_price}\nSL: {sl_price}")
 
-            # SELL SETUP
+            # SELL SETUP (Previous Day High Sweep + 2 Red 1m Candles)
             elif POSITION is None and float(c2[2]) > prev_day_high and c1_is_red and c2_is_red:
                 sl_price = max(float(c1[2]), float(c2[2]))
                 order = b_client.futures_create_order(symbol=SYMBOL, side="SELL", type="MARKET", quantity=0.002)
                 POSITION = {"side": "SELL", "sl": sl_price, "entry": current_price}
                 send_telegram(f"🔻 SELL Trade Opened!\nSymbol: {SYMBOL}\nEntry: {current_price}\nSL: {sl_price}")
 
-            # MANAGE POSITIONS
+            # --- MANAGE ACTIVE POSITIONS ---
             if POSITION:
-                if POSITION['side'] == 'BUY' and current_price <= POSITION['sl']:
-                    b_client.futures_create_order(symbol=SYMBOL, side="SELL", type="MARKET", quantity=0.002)
-                    send_telegram(f"❌ BUY Stop Loss Hit at {current_price}")
-                    POSITION = None
+                # BUY POSITION MANAGEMENT
+                if POSITION['side'] == 'BUY':
+                    # Stop Loss Hit
+                    if current_price <= POSITION['sl']:
+                        b_client.futures_create_order(symbol=SYMBOL, side="SELL", type="MARKET", quantity=0.002)
+                        send_telegram(f"❌ BUY Stop Loss Hit at {current_price}")
+                        POSITION = None
+                    else:
+                        # 1:2 R:R Calculation
+                        risk = POSITION['entry'] - POSITION['sl']
+                        target_1_2 = POSITION['entry'] + (risk * 2)
 
-                elif POSITION['side'] == 'SELL' and current_price >= POSITION['sl']:
-                    b_client.futures_create_order(symbol=SYMBOL, side="BUY", type="MARKET", quantity=0.002)
-                    send_telegram(f"❌ SELL Stop Loss Hit at {current_price}")
-                    POSITION = None
+                        # Minimum 1:2 Target hit howar por Structural Shift Exit Check
+                        if current_price >= target_1_2 and c1_is_red and c2_is_red:
+                            b_client.futures_create_order(symbol=SYMBOL, side="SELL", type="MARKET", quantity=0.002)
+                            send_telegram(f"💰 BUY Trailing Exit (1:2+ Target & Structure Break) at {current_price}")
+                            POSITION = None
 
-                elif POSITION['side'] == 'BUY' and c1_is_red and c2_is_red:
-                    b_client.futures_create_order(symbol=SYMBOL, side="SELL", type="MARKET", quantity=0.002)
-                    send_telegram(f"💰 BUY Position Closed! (Structure Break)\nExit: {current_price}")
-                    POSITION = None
+                # SELL POSITION MANAGEMENT
+                elif POSITION['side'] == 'SELL':
+                    # Stop Loss Hit
+                    if current_price >= POSITION['sl']:
+                        b_client.futures_create_order(symbol=SYMBOL, side="BUY", type="MARKET", quantity=0.002)
+                        send_telegram(f"❌ SELL Stop Loss Hit at {current_price}")
+                        POSITION = None
+                    else:
+                        # 1:2 R:R Calculation
+                        risk = POSITION['sl'] - POSITION['entry']
+                        target_1_2 = POSITION['entry'] - (risk * 2)
 
-                elif POSITION['side'] == 'SELL' and c1_is_green and c2_is_green:
-                    b_client.futures_create_order(symbol=SYMBOL, side="BUY", type="MARKET", quantity=0.002)
-                    send_telegram(f"💰 SELL Position Closed! (Structure Break)\nExit: {current_price}")
-                    POSITION = None
+                        # Minimum 1:2 Target hit howar por Structural Shift Exit Check
+                        if current_price <= target_1_2 and c1_is_green and c2_is_green:
+                            b_client.futures_create_order(symbol=SYMBOL, side="BUY", type="MARKET", quantity=0.002)
+                            send_telegram(f"💰 SELL Trailing Exit (1:2+ Target & Structure Break) at {current_price}")
+                            POSITION = None
 
             time.sleep(20)
 
         except Exception as e:
             print(f"Auto Loop Error: {e}")
-            # IP Ban ধরা পড়লে লুপটি ৫ মিনিটের জন্য থামিয়ে রাখা হবে
             time.sleep(300)
 
-# Background Thread
+# Background Thread Start
 threading.Thread(target=auto_trade_loop, daemon=True).start()
 
-# WEBHOOK
+# WEBHOOK FOR TELEGRAM
 @app.route('/telegram', methods=['POST'])
 def telegram_webhook():
     data = request.get_json()
