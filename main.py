@@ -209,3 +209,19 @@ bot_thread.start()
 
 if __name__ == "__main__":
   app.run(host="0.0.0.0", port=10000)
+  @app.route('/test-telegram')
+def test_telegram():
+    try:
+        url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
+        payload = {
+            "chat_id": TELEGRAM_CHAT_ID,
+            "text": "🟢 Test Message: Your Telegram bridge is working successfully!"
+        }
+        response = requests.post(url, json=payload)
+        if response.status_code == 200:
+            return "Telegram test message sent successfully! Check your chat."
+        else:
+            return f"Failed to send: {response.text}"
+    except Exception as e:
+        return f"Error: {str(e)}"
+
