@@ -12,6 +12,9 @@ API_SECRET = os.environ.get('BINANCE_API_SECRET')
 TELEGRAM_BOT_TOKEN = os.environ.get('TELEGRAM_BOT_TOKEN')
 TELEGRAM_CHAT_ID = os.environ.get('TELEGRAM_CHAT_ID')
 
+# একটিমাত্র গ্লোবাল বাইন্যান্স ক্লায়েন্ট ইনিশিয়ালাইজ করা যাতে বারবার রিকোয়েস্ট ওয়েট বেড়ে না যায়
+binance_client = Client(API_KEY, API_SECRET)
+
 def send_telegram_message(message, chat_id=None):
     """টেলিগ্রামে মেসেজ পাঠানোর ফাংশন"""
     target_chat = chat_id if chat_id else TELEGRAM_CHAT_ID
@@ -44,8 +47,7 @@ def set_telegram_webhook():
 def get_binance_futures_balance():
     """বাইন্যান্স ফিউচার্স অ্যাকাউন্ট থেকে ইউএসডিটি ব্যালেন্স চেক করার ফাংশন"""
     try:
-        client = Client(API_KEY, API_SECRET)
-        account_info = client.futures_account()
+        account_info = binance_client.futures_account()
         for asset in account_info.get('assets', []):
             if asset['asset'] == 'USDT':
                 wallet_balance = float(asset['walletBalance'])
@@ -58,27 +60,27 @@ def get_binance_futures_balance():
 def background_trading_bot():
     """ব্যাকগ্রাউন্ডে নিয়মিত রান হওয়া BTCUSDT মার্কেট সুইপ লজিক"""
     print("BTCUSDT Smart Money Reversal Bot Started...")
-    time.sleep(5) # সার্ভার পুরোপুরি রেন্ডারে লাইভ হওয়ার জন্য কয়েক সেকেন্ড অপেক্ষা
+    time.sleep(5)
     set_telegram_webhook()
     send_telegram_message("🟢 BTCUSDT Market Sweep & Reversal Bot is Active!")
     
     while True:
         try:
-            client = Client(API_KEY, API_SECRET)
-            klines = client.get_klines(symbol='BTCUSDT', interval=Client.KLINE_INTERVAL_5MINUTE, limit=10)
+            # কম লিমি트 ব্যবহার করে ওয়েট কমানো হয়েছে
+            klines = binance_client.get_klines(symbol='BTCUSDT', interval=Client.KLINE_INTERVAL_5MINUTE, limit=5)
             
             if klines:
                 latest_candle = klines[-1]
                 close_price = float(latest_candle[4])
                 print(f"BTCUSDT Checked: Close={close_price}")
                 
-            time.sleep(600)
+            # রেট লিমি트 এড়াতে বিরতি ১৫ মিনিট করা হয়েছে
+            time.sleep(900)
             
         except Exception as e:
             error_msg = f"⚠️ Binance error / Rate limit: {str(e)}"
             print(error_msg)
-            send_telegram_message(error_msg)
-            time.sleep(900)
+            time.sleep(1200)
 
 @app.route('/')
 def home():
@@ -89,7 +91,6 @@ def telegram_webhook():
     """টেলিগ্রাম থেকে কমান্ড রিসিভ করার ওয়েবুক রুট"""
     try:
         data = request.get_json()
-        print("Received webhook data:", data)
         if data and 'message' in data:
             message = data['message']
             chat_id = message['chat']['id']
@@ -104,7 +105,6 @@ def telegram_webhook():
         print(f"Webhook Error: {e}")
         return {"status": "error"}, 500
 
-# Gunicorn এবং Local দুই জায়গাতেই ব্যাকগ্রাউন্ড থ্রেড রান করার জন্য সেফ ইনিশিয়ালাইজেশন
 if not app.debug or os.environ.get("WERKZEUG_RUN_MAIN") == "true":
     bot_thread = threading.Thread(target=background_trading_bot)
     bot_thread.daemon = True
