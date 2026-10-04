@@ -4,6 +4,7 @@ import threading
 import requests
 from flask import Flask, request
 from binance.client import Client
+from binance.exceptions import BinanceAPIException
 
 app = Flask(__name__)
 
@@ -30,7 +31,7 @@ def send_telegram_message(message, chat_id=None):
         print(f"Telegram Error: {e}")
 
 def set_telegram_webhook():
-    """অটোমেটিক ওয়েবুক সেট করার ফাংশন"""
+    """বট চালুর সময় অটোমেটিক ওয়েবুক সেট করার ফাংশন"""
     render_url = os.environ.get('RENDER_EXTERNAL_URL')
     if render_url and TELEGRAM_BOT_TOKEN:
         webhook_url = f"{render_url}/telegram-webhook"
@@ -42,7 +43,7 @@ def set_telegram_webhook():
             print(f"Webhook Setup Error: {e}")
 
 def get_binance_futures_balance():
-    """বাইন্যান্স ফিউচার্স অ্যাকাউন্ট থেকে ইউএসডিটি ব্যালেন্স চেক করার ফাংশন"""
+    """বাইন্যান্স ফিউচার্স অ্যাকাউন্ট থেকে ইউএসডিটি ব্যালেন্স সেফলি চেক করার ফাংশন"""
     try:
         client = Client(API_KEY, API_SECRET)
         account_info = client.futures_account()
@@ -52,36 +53,91 @@ def get_binance_futures_balance():
                 available_balance = float(asset['availableBalance'])
                 return f"💰 Binance Futures Balance:\n- Wallet Balance: {wallet_balance} USDT\n- Available Balance: {available_balance} USDT"
         return "⚠️ USDT balance not found in Futures account."
+    except BinanceAPIException as e:
+        if e.code == -1003:
+            return "⚠️ Binance Rate Limit Hit (IP Banned temporarily). Please wait a few minutes."
+        return f"⚠ Binance API Error: {str(e)}"
     except Exception as e:
         return f"⚠ Error fetching balance: {str(e)}"
 
+def check_smc_market_sweep_and_fvg(client):
+    """SMC Strategy: Liquidity Sweep & Fair Value Gap (FVG) Detection on 5m Chart"""
+    try:
+        klines = client.get_klines(symbol='BTCUSDT', interval=Client.KLINE_INTERVAL_5MINUTE, limit=15)
+        if len(klines) < 10:
+            return
+
+        # ক্যান্ডেল ডাটা পার্স করা [Open, High, Low, Close]
+        highs = [float(k[2]) for k in klines]
+        lows = [float(k[3])] * len(klines) # আগের লো এর জন্য
+        # আসল লো বের করা
+        actual_lows = [float(k[3]) for k in klines]
+        closes = [float(k[4]) for k in klines]
+
+        # সাম্প্রতিক সুইং হাই এবং লো তুলনা
+        recent_high = max(highs[-10:-2])
+        recent_low = min(actual_lows[-10:-2])
+        
+        latest_high = highs[-1]
+        latest_low = actual_lows[-1]
+        latest_close = closes[-1]
+
+        # 1. Liquidity Sweep Detection (সুইপ লজিক)
+        sweep_detected = None
+        if latest_high > recent_high and latest_close < recent_high:
+            sweep_detected = "🔴 Bearish Liquidity Sweep (High Taken & Rejected)!"
+        elif latest_low < recent_low and latest_close > recent_low:
+            sweep_detected = "🟢 Bullish Liquidity Sweep (Low Taken & Rejected)!"
+
+        # 2. Fair Value Gap (FVG) Detection (ফেইয়ার ভ্যালু গ্যাপ)
+        # বুলিশ FVG: ক্যান্ডেল ১ এর হাই < ক্যান্ডেল ৩ এর লো
+        fvg_detected = None
+        c1_high = highs[-3]
+        c3_low = actual_lows[-1]
+        if c3_low > c1_high:
+            fvg_detected = f"⚡ Bullish FVG Formed between {c1_high} and {c3_low}"
+
+        # যদি কোনো সিগন্যাল পাওয়া যায়, টেলিগ্রামে অ্যালার্ট পাঠাবে
+        if sweep_detected or fvg_detected:
+            alert_msg = f"🔔 **SMC Setup Alert (BTCUSDT - 5m)**\n"
+            if sweep_detected:
+                alert_msg += f"- {sweep_detected}\n"
+            if fvg_detected:
+                alert_msg += f"- {fvg_detected}\n"
+            alert_msg += f"- Current Price: {latest_close}"
+            
+            send_telegram_message(alert_msg)
+            print("Alert Sent:", alert_msg)
+
+    except Exception as e:
+        print(f"SMC Check Error: {e}")
+
 def background_trading_bot():
-    """ব্যাকগ্রাউন্ডে নিয়মিত রান হওয়া BTCUSDT মার্কেট সুইপ লজিক"""
+    """ব্যাকগ্রাউন্ডে নিয়মিত রান হওয়া ট্রেডিং বট লুপ"""
     print("BTCUSDT Smart Money Reversal Bot Started...")
     time.sleep(5)
     set_telegram_webhook()
-    send_telegram_message("🟢 BTCUSDT Market Sweep & Reversal Bot is Active!")
+    send_telegram_message("🟢 BTCUSDT SMC Market Sweep & Fvg Bot is Active & Running!")
     
     while True:
         try:
             client = Client(API_KEY, API_SECRET)
-            klines = client.get_klines(symbol='BTCUSDT', interval=Client.KLINE_INTERVAL_5MINUTE, limit=5)
+            # SMC অ্যানালাইসিস রান করা
+            check_smc_market_sweep_and_fvg(client)
             
-            if klines:
-                latest_candle = klines[-1]
-                close_price = float(latest_candle[4])
-                print(f"BTCUSDT Checked: Close={close_price}")
-                
+            # রেট লিমিট এড়াতে ১৫ মিনিট পর পর চেক করবে
             time.sleep(900)
             
+        except BinanceAPIException as e:
+            print(f"Binance Rate Limit Error in background: {e}")
+            time.sleep(1200) # ব্যান খেলে আরও বেশি সময় অপেক্ষা করবে
         except Exception as e:
-            error_msg = f"⚠️ Binance error / Rate limit: {str(e)}"
-            print(error_msg)
-            time.sleep(1200)
+            print(f"Background Bot Error: {e}")
+            time.sleep(900)
 
 @app.route('/')
 def home():
-    return "Secure Full Auto Futures Trading Bot is Active and Running!"
+    return "Secure Full Auto Futures Trading Bot with SMC is Active and Running!"
 
 @app.route('/telegram-webhook', methods=['POST'])
 def telegram_webhook():
