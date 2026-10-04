@@ -1,5 +1,4 @@
-Flask
+flask
 requests
-pandas
-python-binance
 gunicorn
+python-binance
