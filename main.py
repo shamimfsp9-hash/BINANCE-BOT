@@ -30,8 +30,8 @@ def send_telegram_message(message, chat_id=None):
         print(f"Telegram Error: {e}")
 
 def set_telegram_webhook():
-    """বট চালু হওয়ার সাথে সাথে অটোমেটিক ওয়েবুক সেট করার ফাংশন"""
-    render_url = os.environ.get('RENDER_EXTERNAL_URL') # রেন্ডার অটোমেটিক তার নিজের লিংক ধরে নেয়
+    """অটোমেটিক ওয়েবুক সেট করার ফাংশন"""
+    render_url = os.environ.get('RENDER_EXTERNAL_URL')
     if render_url and TELEGRAM_BOT_TOKEN:
         webhook_url = f"{render_url}/telegram-webhook"
         api_url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/setWebhook?url={webhook_url}"
@@ -58,10 +58,8 @@ def get_binance_futures_balance():
 def background_trading_bot():
     """ব্যাকগ্রাউন্ডে নিয়মিত রান হওয়া BTCUSDT মার্কেট সুইপ লজিক"""
     print("BTCUSDT Smart Money Reversal Bot Started...")
-    
-    # বট চালু হওয়ার সাথে সাথে অটো ওয়েবুক সেট করে নেবে
+    time.sleep(5) # সার্ভার পুরোপুরি রেন্ডারে লাইভ হওয়ার জন্য কয়েক সেকেন্ড অপেক্ষা
     set_telegram_webhook()
-    
     send_telegram_message("🟢 BTCUSDT Market Sweep & Reversal Bot is Active!")
     
     while True:
@@ -74,7 +72,7 @@ def background_trading_bot():
                 close_price = float(latest_candle[4])
                 print(f"BTCUSDT Checked: Close={close_price}")
                 
-            time.sleep(600) # ১০ মিনিট পর পর রিকোয়েস্ট পাঠাবে
+            time.sleep(600)
             
         except Exception as e:
             error_msg = f"⚠️ Binance error / Rate limit: {str(e)}"
@@ -91,6 +89,7 @@ def telegram_webhook():
     """টেলিগ্রাম থেকে কমান্ড রিসিভ করার ওয়েবুক রুট"""
     try:
         data = request.get_json()
+        print("Received webhook data:", data)
         if data and 'message' in data:
             message = data['message']
             chat_id = message['chat']['id']
@@ -100,15 +99,17 @@ def telegram_webhook():
                 balance_msg = get_binance_futures_balance()
                 send_telegram_message(balance_msg, chat_id=chat_id)
                 
-        return {"status": "ok"}
+        return {"status": "ok"}, 200
     except Exception as e:
         print(f"Webhook Error: {e}")
-        return {"status": "error"}
+        return {"status": "error"}, 500
+
+# Gunicorn এবং Local দুই জায়গাতেই ব্যাকগ্রাউন্ড থ্রেড রান করার জন্য সেফ ইনিশিয়ালাইজেশন
+if not app.debug or os.environ.get("WERKZEUG_RUN_MAIN") == "true":
+    bot_thread = threading.Thread(target=background_trading_bot)
+    bot_thread.daemon = True
+    bot_thread.start()
 
 if __name__ == '__main__':
-    t = threading.Thread(target=background_trading_bot)
-    t.daemon = True
-    t.start()
-    
     port = int(os.environ.get("PORT", 5000))
     app.run(host='0.0.0.0', port=port)
