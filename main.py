@@ -12,7 +12,6 @@ TELEGRAM_BOT_TOKEN = os.getenv('TELEGRAM_BOT_TOKEN')
 BINANCE_API_KEY = os.getenv('BINANCE_API_KEY')
 BINANCE_API_SECRET = os.getenv('BINANCE_API_SECRET')
 
-# Binance Client Safe Initialization
 client = None
 
 def get_binance_client():
@@ -20,6 +19,8 @@ def get_binance_client():
     if client is None and BINANCE_API_KEY and BINANCE_API_SECRET:
         try:
             client = Client(BINANCE_API_KEY, BINANCE_API_SECRET)
+            # Test call to verify if IP is unbanned
+            client.futures_ping()
             print("Binance Client Initialized Successfully!")
         except Exception as e:
             print(f"Binance Init Error: {e}")
@@ -46,7 +47,8 @@ def auto_trade_loop():
         try:
             b_client = get_binance_client()
             if b_client is None:
-                time.sleep(30)  # Client না পেলে ৩০ সেকেন্ড অপেক্ষা করবে
+                # API কানেক্ট না হলে ৫ মিনিট সম্পূর্ণ নীরব থাকবে
+                time.sleep(300)
                 continue
 
             # 1. Daily Candle Data
@@ -61,7 +63,6 @@ def auto_trade_loop():
 
             current_price = float(c2[4])
 
-            # Green / Red Conditions
             c1_is_green = float(c1[4]) > float(c1[1])
             c2_is_green = float(c2[4]) > float(c2[1])
             c1_is_red = float(c1[4]) < float(c1[1])
@@ -81,7 +82,7 @@ def auto_trade_loop():
                 POSITION = {"side": "SELL", "sl": sl_price, "entry": current_price}
                 send_telegram(f"🔻 SELL Trade Opened!\nSymbol: {SYMBOL}\nEntry: {current_price}\nSL: {sl_price}")
 
-            # MANAGE OPEN POSITIONS
+            # MANAGE POSITIONS
             if POSITION:
                 if POSITION['side'] == 'BUY' and current_price <= POSITION['sl']:
                     b_client.futures_create_order(symbol=SYMBOL, side="SELL", type="MARKET", quantity=0.002)
@@ -103,19 +104,17 @@ def auto_trade_loop():
                     send_telegram(f"💰 SELL Position Closed! (Structure Break)\nExit: {current_price}")
                     POSITION = None
 
-            time.sleep(20)  # প্রতি ২০ সেকেন্ড পর পর চেক করবে
+            time.sleep(20)
 
         except Exception as e:
             print(f"Auto Loop Error: {e}")
-            if "code=-1003" in str(e):
-                time.sleep(60)  # IP Ban থাকলে লুপ ১ মিনিট পজ হয়ে থাকবে
-            else:
-                time.sleep(20)
+            # IP Ban ধরা পড়লে লুপটি ৫ মিনিটের জন্য থামিয়ে রাখা হবে
+            time.sleep(300)
 
 # Background Thread
 threading.Thread(target=auto_trade_loop, daemon=True).start()
 
-# --- WEBHOOK FOR TELEGRAM COMMANDS ---
+# WEBHOOK
 @app.route('/telegram', methods=['POST'])
 def telegram_webhook():
     data = request.get_json()
@@ -134,7 +133,7 @@ def telegram_webhook():
                 except Exception as e:
                     send_telegram(f"Balance Error: {e}")
             else:
-                send_telegram("Binance connection error or IP banned temporarily.")
+                send_telegram("Binance IP banned temporarily. Cooling down for 10 mins...")
 
     return jsonify({"status": "ok"})
 
