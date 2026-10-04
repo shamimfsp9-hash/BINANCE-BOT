@@ -1,157 +1,120 @@
-import os
 import time
-import threading
-from flask import Flask, request, jsonify
-import requests
-from binance.client import Client
 
-app = Flask(__name__)
+# গ্লোবাল ভ্যারিয়েবল: এটি মনে রাখবে বর্তমানে কোনো ট্রেড রানিং আছে কি না এবং তার তথ্য কি
+ACTIVE_POSITION = None  # ফরম্যাট: {"side": "BUY" / "SELL", "entry": দাম, "sl": স্টপলস, "risk": ঝুঁকি}
 
-# Environment Variables
-TELEGRAM_BOT_TOKEN = os.getenv('TELEGRAM_BOT_TOKEN')
-BINANCE_API_KEY = os.getenv('BINANCE_API_KEY')
-BINANCE_API_SECRET = os.getenv('BINANCE_API_SECRET')
 
-client = None
+def check_entry_signal(df_1m, daily_high, daily_low):
+  """১-মিনিট চার্ট থেকে ডেইলি হাই/লো সুইপ এবং ডাবল ক্যান্ডেল রিভার্সাল চেক করে সিগন্যাল দেয়"""
+  if len(df_1m) < 5:
+    return None, None, None
 
-def get_binance_client():
-    global client
-    if client is None and BINANCE_API_KEY and BINANCE_API_SECRET:
-        try:
-            client = Client(BINANCE_API_KEY, BINANCE_API_SECRET)
-            # Test ping to check unban status
-            client.futures_ping()
-            print("Binance Client Initialized Successfully!")
-        except Exception as e:
-            print(f"Binance Init Error: {e}")
-            client = None
-    return client
+  # শেষ ৩টি ১-মিনিটের ক্যান্ডেল নির্ধারণ করা হচ্ছে
+  c1 = df_1m.iloc[-3]
+  c2 = df_1m.iloc[-2]
+  c3 = df_1m.iloc[-1]
 
-SYMBOL = "BTCUSDT"
-POSITION = None
+  # ১. সেল সেটআপ (SELL Setup): ডেইলি হাই সুইপ এবং পরপর দুটি লাল ক্যান্ডেল ক্লোজ হলে
+  high_swept = (
+      (c1["high"] > daily_high)
+      or (c2["high"] > daily_high)
+      or (c3["high"] > daily_high)
+  )
+  if high_swept:
+    is_c2_red = c2["close"] < c2["open"]
+    is_c3_red = c3["close"] < c3["open"]
+    if is_c2_red and is_c3_red:
+      # সুইপ মুভমেন্টের সর্বোচ্চ পিক পয়েন্ট স্টপ লস হিসেবে সেট হবে
+      stop_loss = max(c1["high"], c2["high"], c3["high"])
+      entry_price = c3["close"]
+      return "SELL", entry_price, stop_loss
 
-def send_telegram(message):
-    if TELEGRAM_BOT_TOKEN:
-        url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
-        chat_id = os.getenv('TELEGRAM_CHAT_ID')
-        if chat_id:
-            try:
-                requests.post(url, json={"chat_id": chat_id, "text": message})
-            except Exception as e:
-                print(f"Telegram Error: {e}")
+  # ২. বাই সেটআপ (BUY Setup): ডেইলি লো সুইপ এবং পরপর দুটি সবুজ ক্যান্ডেল ক্লোজ হলে
+  low_swept = (
+      (c1["low"] < daily_low) or (c2["low"] < daily_low) or (c3["low"] < daily_low)
+  )
+  if low_swept:
+    is_c2_green = c2["close"] > c2["open"]
+    is_c3_green = c3["close"] > c3["open"]
+    if is_c2_green and is_c3_green:
+      # সুইপ মুভমেন্টের সর্বনিম্ন লো পয়েন্ট স্টপ লস হিসেবে সেট হবে
+      stop_loss = min(c1["low"], c2["low"], c3["low"])
+      entry_price = c3["close"]
+      return "BUY", entry_price, stop_loss
 
-# --- AUTO TRADING BOT ENGINE ---
-def auto_trade_loop():
-    global POSITION
-    while True:
-        try:
-            b_client = get_binance_client()
-            if b_client is None:
-                # Binance connection error / IP ban cooldown (5 mins silence)
-                time.sleep(300)
-                continue
+  return None, None, None
 
-            # 1. Daily Candle Data
-            daily_klines = b_client.futures_klines(symbol=SYMBOL, interval=Client.KLINE_INTERVAL_1DAY, limit=2)
-            prev_day_high = float(daily_klines[0][2])
-            prev_day_low = float(daily_klines[0][3])
-            
-            # 2. 1-Minute Candles Data
-            m1_klines = b_client.futures_klines(symbol=SYMBOL, interval=Client.KLINE_INTERVAL_1MINUTE, limit=5)
-            c1 = m1_klines[-2]
-            c2 = m1_klines[-1]
 
-            current_price = float(c2[4])
+def manage_active_trade(df_1m):
+  """রানিং ট্রেড ম্যানেজ করে: ১:৩ টার্গেটে ট্রেইলিং এসএল এবং স্ট্রাকচার শিফটে ট্রেড ক্লোজ করে"""
+  global ACTIVE_POSITION
+  if not ACTIVE_POSITION:
+    return
 
-            c1_is_green = float(c1[4]) > float(c1[1])
-            c2_is_green = float(c2[4]) > float(c2[1])
-            c1_is_red = float(c1[4]) < float(c1[1])
-            c2_is_red = float(c2[4]) < float(c2[1])
+  current_price = df_1m.iloc[-1]["close"]
+  side = ACTIVE_POSITION["side"]
+  entry = ACTIVE_POSITION["entry"]
+  sl = ACTIVE_POSITION["sl"]
+  risk = ACTIVE_POSITION["risk"]
 
-            # --- ENTRY SIGNALS ---
-            # BUY SETUP (Previous Day Low Sweep + 2 Green 1m Candles)
-            if POSITION is None and float(c2[3]) < prev_day_low and c1_is_green and c2_is_green:
-                sl_price = min(float(c1[3]), float(c2[3]))
-                order = b_client.futures_create_order(symbol=SYMBOL, side="BUY", type="MARKET", quantity=0.002)
-                POSITION = {"side": "BUY", "sl": sl_price, "entry": current_price}
-                send_telegram(f"🚀 BUY Trade Opened!\nSymbol: {SYMBOL}\nEntry: {current_price}\nSL: {sl_price}")
+  c1 = df_1m.iloc[-2]
+  c2 = df_1m.iloc[-1]
 
-            # SELL SETUP (Previous Day High Sweep + 2 Red 1m Candles)
-            elif POSITION is None and float(c2[2]) > prev_day_high and c1_is_red and c2_is_red:
-                sl_price = max(float(c1[2]), float(c2[2]))
-                order = b_client.futures_create_order(symbol=SYMBOL, side="SELL", type="MARKET", quantity=0.002)
-                POSITION = {"side": "SELL", "sl": sl_price, "entry": current_price}
-                send_telegram(f"🔻 SELL Trade Opened!\nSymbol: {SYMBOL}\nEntry: {current_price}\nSL: {sl_price}")
+  if side == "BUY":
+    # ১:৩ রিস্ক-টু-রিওয়ার্ড টার্গেট হিসাব
+    target_1_3 = entry + (risk * 3)
 
-            # --- MANAGE ACTIVE POSITIONS ---
-            if POSITION:
-                # BUY POSITION MANAGEMENT
-                if POSITION['side'] == 'BUY':
-                    # Stop Loss Hit
-                    if current_price <= POSITION['sl']:
-                        b_client.futures_create_order(symbol=SYMBOL, side="SELL", type="MARKET", quantity=0.002)
-                        send_telegram(f"❌ BUY Stop Loss Hit at {current_price}")
-                        POSITION = None
-                    else:
-                        # 1:2 R:R Calculation
-                        risk = POSITION['entry'] - POSITION['sl']
-                        target_1_2 = POSITION['entry'] + (risk * 2)
+    # প্রাইস ১:৩ টার্গেটে পৌঁছালে স্টপ লসকে এন্ট্রি প্রাইসে (Break-even) নিয়ে আসা
+    if current_price >= target_1_3 and sl < entry:
+      ACTIVE_POSITION["sl"] = entry
+      print(
+          "ট্রেড ১:৩ টার্গেটে পৌঁছেছে! স্টপ লস ব্রেক-ইভেন (Entry Price) এ শিফট"
+          " করা হলো (BUY)"
+      )
 
-                        # Minimum 1:2 Target hit howar por Structural Shift Exit Check
-                        if current_price >= target_1_2 and c1_is_red and c2_is_red:
-                            b_client.futures_create_order(symbol=SYMBOL, side="SELL", type="MARKET", quantity=0.002)
-                            send_telegram(f"💰 BUY Trailing Exit (1:2+ Target & Structure Break) at {current_price}")
-                            POSITION = None
+    # স্ট্রাকচার শিফট চেক: বাই ট্রেডে হঠাৎ দুটি লাল ক্যান্ডেল আসলে ট্রেন্ড পরিবর্তন ধরে ট্রেড ক্লোজ
+    if c1["close"] < c1["open"] and c2["close"] < c2["open"]:
+      print(
+          "মার্কেট স্ট্রাকচার শিফট কনফার্ম হয়েছে! BUY ট্রেড ক্লোজ করা হচ্ছে।"
+      )
+      # TODO: এখানে আপনার এক্সচেঞ্জের অর্ডার ক্লোজ করার কোড বসবে
+      ACTIVE_POSITION = None
 
-                # SELL POSITION MANAGEMENT
-                elif POSITION['side'] == 'SELL':
-                    # Stop Loss Hit
-                    if current_price >= POSITION['sl']:
-                        b_client.futures_create_order(symbol=SYMBOL, side="BUY", type="MARKET", quantity=0.002)
-                        send_telegram(f"❌ SELL Stop Loss Hit at {current_price}")
-                        POSITION = None
-                    else:
-                        # 1:2 R:R Calculation
-                        risk = POSITION['sl'] - POSITION['entry']
-                        target_1_2 = POSITION['entry'] - (risk * 2)
+  elif side == "SELL":
+    # ১:৩ রিস্ক-টু-রিওয়ার্ড টার্গেট হিসাব
+    target_1_3 = entry - (risk * 3)
 
-                        # Minimum 1:2 Target hit howar por Structural Shift Exit Check
-                        if current_price <= target_1_2 and c1_is_green and c2_is_green:
-                            b_client.futures_create_order(symbol=SYMBOL, side="BUY", type="MARKET", quantity=0.002)
-                            send_telegram(f"💰 SELL Trailing Exit (1:2+ Target & Structure Break) at {current_price}")
-                            POSITION = None
+    # প্রাইস ১:৩ টার্গেটে পৌঁছালে স্টপ লসকে এন্ট্রি প্রাইসে (Break-even) নিয়ে আসা
+    if current_price <= target_1_3 and sl > entry:
+      ACTIVE_POSITION["sl"] = entry
+      print(
+          "ট্রেড ১:৩ টার্গেটে পৌঁছেছে! স্টপ লস ব্রেক-ইভেন (Entry Price) এ শিফট"
+          " করা হলো (SELL)"
+      )
 
-            time.sleep(20)
+    # স্ট্রাকচার শিফট চেক: সেল ট্রেডে হঠাৎ দুটি সবুজ ক্যান্ডেল আসলে ট্রেন্ড পরিবর্তন ধরে ট্রেড ক্লোজ
+    if c1["close"] > c1["open"] and c2["close"] > c2["open"]:
+      print(
+          "মার্কেট স্ট্রাকচার শিফট কনফার্ম হয়েছে! SELL ট্রেড ক্লোজ করা হচ্ছে।"
+      )
+      # TODO: এখানে আপনার এক্সচেঞ্জের অর্ডার ক্লোজ করার কোড বসবে
+      ACTIVE_POSITION = None
 
-        except Exception as e:
-            print(f"Auto Loop Error: {e}")
-            time.sleep(300)
 
-# Background Thread Start
-threading.Thread(target=auto_trade_loop, daemon=True).start()
+def auto_trade_loop(df_1m, daily_high, daily_low):
+  global ACTIVE_POSITION
 
-# WEBHOOK FOR TELEGRAM
-@app.route('/telegram', methods=['POST'])
-def telegram_webhook():
-    data = request.get_json()
-    if data and "message" in data and "text" in data["message"]:
-        text = data["message"]["text"]
-
-        if text == "/start":
-            send_telegram("🤖 Auto Sweep Trading Bot Active!")
-        elif text == "/balance":
-            b_client = get_binance_client()
-            if b_client:
-                try:
-                    bal = b_client.futures_account_balance()
-                    usdt_bal = next((item['balance'] for item in bal if item['asset'] == 'USDT'), '0')
-                    send_telegram(f"💰 USDT Balance: {usdt_bal}")
-                except Exception as e:
-                    send_telegram(f"Balance Error: {e}")
-            else:
-                send_telegram("Binance IP banned temporarily. Cooling down for 10 mins...")
-
-    return jsonify({"status": "ok"})
-
-if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=5000)
+  # যদি কোনো ট্রেড খোলা না থাকে, তবে নতুন এন্ট্রি সিগন্যাল খুঁজবে
+  if ACTIVE_POSITION is None:
+    side, entry, sl = check_entry_signal(df_1m, daily_high, daily_low)
+    if side:
+      risk = abs(entry - sl)
+      ACTIVE_POSITION = {"side": side, "entry": entry, "sl": sl, "risk": risk}
+      print(
+          f"নতুন {side} ট্রেড ওপেন হয়েছে! এন্ট্রি: {entry}, স্টপ লস: {sl},"
+          f" ঝুঁকি: {risk}"
+      )
+      # TODO: এখানে টেলিগ্রামে নোটিফিকেশন পাঠানোর কোড যুক্ত করতে পারেন
+  else:
+    # যদি ইতিমধ্যে ট্রেড রানিং থাকে, তবে তা ট্রেইল এবং ম্যানেজ করতে থাকবে
+    manage_active_trade(df_1m)
