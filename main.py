@@ -7,7 +7,7 @@ from binance.client import Client
 
 app = Flask(__name__)
 
-# আপনার বাইন্যান্স এবং টেলিগ্রাম তথ্য নিচে বসিয়ে দিন
+# Apnar binance ebong telegram info ekhane bosiye din
 API_KEY = "YOUR_BINANCE_API_KEY"
 API_SECRET = "YOUR_BINANCE_API_SECRET"
 TELEGRAM_BOT_TOKEN = "YOUR_TELEGRAM_BOT_TOKEN"
@@ -59,14 +59,14 @@ def check_entry_signal(df_1m, daily_high, daily_low):
   c2 = df_1m.iloc[-2]
   c3 = df_1m.iloc[-1]
 
-  # সেল সেটআপ: ডেইলি হাই সুইপ এবং বিয়ারিশ ক্যান্ডেল কনফার্মেশন
+  # Sell setup: Daily high sweep ebong bearish candle confirmation
   high_swept = (c1['high'] > daily_high) or (c2['high'] > daily_high) or (c3['high'] > daily_high)
   if high_swept:
     if (c2['close'] < c2['open']) and (c3['close'] < c3['open']):
       stop_loss = max(c1['high'], c2['high'], c3['high'])
       return "SELL", c3['close'], stop_loss
 
-  # বাই সেটআপ: ডেইলি লো সুইপ এবং বুলিশ ক্যান্ডেল কনফার্মেশন
+  # Buy setup: Daily low sweep ebong bullish candle confirmation
   low_swept = (c1['low'] < daily_low) or (c2['low'] < daily_low) or (c3['low'] < daily_low)
   if low_swept:
     if (c2['close'] > c2['open']) and (c3['close'] > c3['open']):
@@ -130,8 +130,8 @@ def background_trading_bot():
     except Exception as e:
       print(f"Loop Error: {e}")
     
-    # বাইন্যান্স এপিআই রেট লিমিট (আইপি ব্যান -1003) এড়াতে ১০ সেকেন্ড বিরতি
-    time.sleep(10)
+    # Binance IP ban (-1003 error) erate proti 5 minute (300 second) por por check korbe
+    time.sleep(300)
 
 
 bot_thread = threading.Thread(target=background_trading_bot, daemon=True)
