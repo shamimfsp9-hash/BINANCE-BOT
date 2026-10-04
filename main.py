@@ -7,14 +7,10 @@ from binance.client import Client
 
 app = Flask(__name__)
 
-# Environment variables থেকে ক্রডেনশিয়ালগুলো নেওয়া
 API_KEY = os.environ.get('BINANCE_API_KEY')
 API_SECRET = os.environ.get('BINANCE_API_SECRET')
 TELEGRAM_BOT_TOKEN = os.environ.get('TELEGRAM_BOT_TOKEN')
 TELEGRAM_CHAT_ID = os.environ.get('TELEGRAM_CHAT_ID')
-
-# Binance Client ইনিশিয়ালাইজ করা
-client = Client(API_KEY, API_SECRET)
 
 def send_telegram_message(message):
     """টেলিগ্রামে মেসেজ পাঠানোর ফাংশন"""
@@ -37,15 +33,19 @@ def background_trading_bot():
     print("Secure Full Auto Futures Trading Bot Started...")
     send_telegram_message("🟢 Secure Full Auto Futures Trading Bot is Active and Running!")
     
+    # বাইন্যান্স ক্লায়েন্ট নিরাপদভাবে লুপের ভেতরে ইনিশিয়ালাইজ করা হবে যাতে বারবার রেট লিমিট না খায়
     while True:
         try:
-            # ট্রেডিং লজিক কোড এখানে থাকবে
-            time.sleep(300)
+            # এখানে ক্লায়েন্ট কল করুন
+            client = Client(API_KEY, API_SECRET)
+            # ট্রেডিং বা ব্যালেন্স চেক লজিক এখানে থাকবে
+            
+            time.sleep(600) # ১০ মিনিট পর পর রিকোয়েস্ট পাঠাবে যাতে আইপি ব্যান না হয়
         except Exception as e:
-            error_msg = f"⚠️ Binance connection error or IP banned: {str(e)}"
+            error_msg = f"⚠️ Binance error / Rate limit: {str(e)}"
             print(error_msg)
             send_telegram_message(error_msg)
-            time.sleep(600)
+            time.sleep(900) # এরর খেলে ১৫ মিনিট অপেক্ষা করবে
 
 @app.route('/')
 def home():
